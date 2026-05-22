@@ -5,7 +5,6 @@ Dashboard module for creating interactive visualizations
 import logging
 from datetime import datetime, timedelta
 import pandas as pd
-from database import get_metrics_history, get_latest_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +21,9 @@ def create_dashboard_data(device: str, hours: int = 24) -> dict:
         Dictionary with metrics data for frontend
     """
     try:
+        # Import here to avoid circular imports
+        from database import get_metrics_history
+        
         # Get historical data
         history = get_metrics_history(device, hours)
         
@@ -105,6 +107,8 @@ def create_dashboard_callbacks(app, isis_collector):
     def get_dashboard_stats(device):
         """Get dashboard statistics for a device"""
         from flask import jsonify, request
+        from database import get_metrics_history
+        
         hours = request.args.get('hours', 24, type=int)
         
         try:
