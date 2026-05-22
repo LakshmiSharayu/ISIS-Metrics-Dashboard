@@ -1,157 +1,135 @@
 """
-Database module for storing and retrieving ISIS metrics history
+Dashboard module for creating interactive visualizations
 """
 
-import sqlite3
-import json
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-import os
+import pandas as pd
+from database import get_metrics_history, get_latest_metrics
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = 'data/isis_metrics.db'
 
-
-def init_database():
-    """Initialize SQLite database with required tables"""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+def create_dashboard_data(device: str, hours: int = 24) -> dict:
+    """
+    Prepare data for dashboard visualization
     
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    Args:
+        device: Device name
+        hours: Hours of historical data to include
     
-    # Create metrics table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS metrics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device TEXT NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            total_lsps INTEGER,
-            lsp_database_size INTEGER,
-            isis_nodes INTEGER,
-            prefixes INTEGER,
-            database_overload BOOLEAN,
-            lsp_count_l1 INTEGER,
-            lsp_count_l2 INTEGER,
-            adjacencies INTEGER,
-            interfaces INTEGER,
-            raw_data TEXT,
-            UNIQUE(device, timestamp)
-        )
-    ''')
+    Returns:
+        Dictionary with metrics data for frontend
+    """
+    try:
+        # Get historical data
+        history = get_metrics_history(device, hours)
+        
+        if not history:
+            return {
+                'success': False,
+                'message': 'No data available',
+                'device': device
+            }
+        
+        # Convert to DataFrame for easier manipulation
+        df = pd.DataFrame(history)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.sort_values('timestamp')
+        
+        # Prepare time series data
+        timeline = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
+        
+        dashboard_data = {
+            'success': True,
+            'device': device,
+            'update_time': datetime.utcnow().isoformat(),
+            'current_metrics': {
+                'total_lsps': int(df['total_lsps'].iloc[-1]) if len(df) > 0 else 0,
+                'lsp_database_size': int(df['lsp_database_size'].iloc[-1]) if len(df) > 0 else 0,
+                'isis_nodes': int(df['isis_nodes'].iloc[-1]) if len(df) > 0 else 0,
+                'prefixes': int(df['prefixes'].iloc[-1]) if len(df) > 0 else 0,
+                'lsp_count_l1': int(df['lsp_count_l1'].iloc[-1]) if len(df) > 0 else 0,
+                'lsp_count_l2': int(df['lsp_count_l2'].iloc[-1]) if len(df) > 0 else 0,
+                'adjacencies': int(df['adjacencies'].iloc[-1]) if len(df) > 0 else 0,
+                'interfaces': int(df['interfaces'].iloc[-1]) if len(df) > 0 else 0,
+                'database_overload': bool(df['database_overload'].iloc[-1]) if len(df) > 0 else False
+            },
+            'time_series': {
+                'timestamp': timeline,
+                'total_lsps': df['total_lsps'].tolist(),
+                'lsp_database_size': df['lsp_database_size'].tolist(),
+                'isis_nodes': df['isis_nodes'].tolist(),
+                'lsp_count_l1': df['lsp_count_l1'].tolist(),
+                'lsp_count_l2': df['lsp_count_l2'].tolist(),
+                'adjacencies': df['adjacencies'].tolist()
+            },
+            'statistics': {
+                'total_lsps_avg': float(df['total_lsps'].mean()),
+                'total_lsps_max': int(df['total_lsps'].max()),
+                'total_lsps_min': int(df['total_lsps'].min()),
+                'lsp_database_size_avg': float(df['lsp_database_size'].mean()),
+                'isis_nodes_avg': float(df['isis_nodes'].mean()),
+                'isis_nodes_max': int(df['isis_nodes'].max())
+            }
+        }
+        
+        return dashboard_data
     
-    # Create index for faster queries
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_device_timestamp 
-        ON metrics(device, timestamp DESC)
-    ''')
+    except Exception as e:
+        logger.error(f"Error creating dashboard data: {str(e)}")
+        return {
+            'success': False,
+            'message': str(e),
+            'device': device
+        }
+
+
+def create_dashboard_callbacks(app, isis_collector):
+    """
+    Create Flask route callbacks for dashboard updates
     
-    conn.commit()
-    conn.close()
-    logger.info("Database initialized successfully")
-
-
-def save_metrics(device: str, metrics: Dict) -> bool:
-    """Save metrics to database"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+    Args:
+        app: Flask application instance
+        isis_collector: ISISCollector instance
+    """
+    @app.route('/api/dashboard/<device>')
+    def get_dashboard(device):
+        """Get dashboard data for a device"""
+        from flask import jsonify, request
+        hours = request.args.get('hours', 24, type=int)
+        data = create_dashboard_data(device, hours)
+        return jsonify(data)
+    
+    @app.route('/api/dashboard/<device>/stats')
+    def get_dashboard_stats(device):
+        """Get dashboard statistics for a device"""
+        from flask import jsonify, request
+        hours = request.args.get('hours', 24, type=int)
         
-        cursor.execute('''
-            INSERT OR IGNORE INTO metrics (
-                device, timestamp, total_lsps, lsp_database_size, 
-                isis_nodes, prefixes, database_overload, lsp_count_l1,
-                lsp_count_l2, adjacencies, interfaces, raw_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            device,
-            metrics.get('timestamp', datetime.utcnow().isoformat()),
-            metrics.get('total_lsps', 0),
-            metrics.get('lsp_database_size', 0),
-            metrics.get('isis_nodes', 0),
-            metrics.get('prefixes', 0),
-            metrics.get('database_overload', False),
-            metrics.get('lsp_count_l1', 0),
-            metrics.get('lsp_count_l2', 0),
-            metrics.get('adjacencies', 0),
-            metrics.get('interfaces', 0),
-            json.dumps(metrics, default=str)
-        ))
+        try:
+            history = get_metrics_history(device, hours)
+            
+            if not history:
+                return jsonify({'error': 'No data available'}), 404
+            
+            df = pd.DataFrame(history)
+            
+            stats = {
+                'device': device,
+                'data_points': len(df),
+                'total_lsps_avg': float(df['total_lsps'].mean()),
+                'total_lsps_max': int(df['total_lsps'].max()),
+                'total_lsps_min': int(df['total_lsps'].min()),
+                'isis_nodes_avg': float(df['isis_nodes'].mean()),
+                'isis_nodes_max': int(df['isis_nodes'].max()),
+                'lsp_database_size_avg': float(df['lsp_database_size'].mean()),
+                'adjacencies_avg': float(df['adjacencies'].mean()),
+                'collection_period_hours': hours
+            }
+            
+            return jsonify(stats)
         
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"Error saving metrics: {str(e)}")
-        return False
-
-
-def get_metrics_history(device: str, hours: int = 24) -> List[Dict]:
-    """Get historical metrics for a device"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
-        
-        cursor.execute('''
-            SELECT * FROM metrics 
-            WHERE device = ? AND timestamp > ?
-            ORDER BY timestamp DESC
-        ''', (device, cutoff_time))
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
-        return [dict(row) for row in rows]
-    except Exception as e:
-        logger.error(f"Error fetching metrics history: {str(e)}")
-        return []
-
-
-def get_latest_metrics(device: str) -> Optional[Dict]:
-    """Get most recent metrics for a device"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT * FROM metrics 
-            WHERE device = ?
-            ORDER BY timestamp DESC
-            LIMIT 1
-        ''', (device,))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        return dict(row) if row else None
-    except Exception as e:
-        logger.error(f"Error fetching latest metrics: {str(e)}")
-        return None
-
-
-def cleanup_old_data(days: int = 30):
-    """Remove metrics older than specified days"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cutoff_time = (datetime.utcnow() - timedelta(days=days)).isoformat()
-        
-        cursor.execute('''
-            DELETE FROM metrics WHERE timestamp < ?
-        ''', (cutoff_time,))
-        
-        conn.commit()
-        deleted = cursor.rowcount
-        conn.close()
-        
-        logger.info(f"Deleted {deleted} old metrics records")
-        return True
-    except Exception as e:
-        logger.error(f"Error cleaning up old data: {str(e)}")
-        return False
+        except Exception as e:
+            logger.error(f"Error fetching dashboard stats: {str(e)}")
+            return jsonify({'error': str(e)}), 500
