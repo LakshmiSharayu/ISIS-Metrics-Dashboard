@@ -5,7 +5,6 @@ Dashboard module for creating interactive visualizations
 import logging
 from datetime import datetime, timedelta
 import pandas as pd
-from database import get_metrics_history, get_latest_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +21,9 @@ def create_dashboard_data(device: str, hours: int = 24) -> dict:
         Dictionary with metrics data for frontend
     """
     try:
+        # Import here to avoid circular imports
+        from database import get_metrics_history
+        
         # Get historical data
         history = get_metrics_history(device, hours)
         
@@ -83,3 +85,55 @@ def create_dashboard_data(device: str, hours: int = 24) -> dict:
             'message': str(e),
             'device': device
         }
+
+
+def create_dashboard_callbacks(app, isis_collector):
+    """
+    Create Flask route callbacks for dashboard updates
+    
+    Args:
+        app: Flask application instance
+        isis_collector: ISISCollector instance
+    """
+    @app.route('/api/dashboard/<device>')
+    def get_dashboard(device):
+        """Get dashboard data for a device"""
+        from flask import jsonify, request
+        hours = request.args.get('hours', 24, type=int)
+        data = create_dashboard_data(device, hours)
+        return jsonify(data)
+    
+    @app.route('/api/dashboard/<device>/stats')
+    def get_dashboard_stats(device):
+        """Get dashboard statistics for a device"""
+        from flask import jsonify, request
+        from database import get_metrics_history
+        
+        hours = request.args.get('hours', 24, type=int)
+        
+        try:
+            history = get_metrics_history(device, hours)
+            
+            if not history:
+                return jsonify({'error': 'No data available'}), 404
+            
+            df = pd.DataFrame(history)
+            
+            stats = {
+                'device': device,
+                'data_points': len(df),
+                'total_lsps_avg': float(df['total_lsps'].mean()),
+                'total_lsps_max': int(df['total_lsps'].max()),
+                'total_lsps_min': int(df['total_lsps'].min()),
+                'isis_nodes_avg': float(df['isis_nodes'].mean()),
+                'isis_nodes_max': int(df['isis_nodes'].max()),
+                'lsp_database_size_avg': float(df['lsp_database_size'].mean()),
+                'adjacencies_avg': float(df['adjacencies'].mean()),
+                'collection_period_hours': hours
+            }
+            
+            return jsonify(stats)
+        
+        except Exception as e:
+            logger.error(f"Error fetching dashboard stats: {str(e)}")
+            return jsonify({'error': str(e)}), 500
